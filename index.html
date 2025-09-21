@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Personal Patient Manager — MVP v3</title>
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --primary: #2563EB; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif; }
+    .card { background:white; border-radius:1rem; box-shadow: 0 6px 24px rgba(0,0,0,.06); padding:1.0rem; }
+    .btn { padding:.7rem 1rem; border-radius:.9rem; color:white; font-weight:600; box-shadow: 0 4px 16px rgba(0,0,0,.06); }
+    .btn-primary { background:var(--primary); }
+    .btn-primary:hover { filter: brightness(.95); }
+    .btn-ghost { background:#F3F4F6; color:#111827; }
+    .btn-ghost:hover { background:#E5E7EB; }
+    .badge { display:inline-flex; align-items:center; padding:.2rem .75rem; border-radius:999px; font-size:.85rem; background:#EEF2FF; color:#3730A3; }
+    .muted { font-size:.9rem; color:#6B7280; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .tab { cursor:pointer; padding:.6rem .8rem; border-radius:.6rem; }
+    .tab.active { background:#EFF6FF; color:#1D4ED8; font-weight:600; }
+    .grid-2 { display:grid; grid-template-columns:1fr; gap:1rem; }
+    @media(min-width: 1024px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
+    input[type=range] { width:100%; }
+    .score { font-weight:700; color:#111827; }
+  </style>
+
+  <!-- Supabase JS -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <!-- WebLLM (browser LLM) -->
+  <script defer type="module">
+    import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+    window._webllm = { CreateMLCEngine };
+  </script>
+  <!-- jsPDF for PDF export -->
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <!-- Chart.js for evolution charts -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+  <div class="max-w-6xl mx-auto p-4 md:p-8">
+    <header class="flex items-center justify-between mb-6">
+      <div class="flex items-center gap-3">
+        <div class="h-10 w-10 rounded-xl" style="background:linear-gradient(135deg,#2563EB,#06B6D4)"></div>
+        <div>
+          <h1 class="text-xl font-bold">Personal Patient Manager <span class="muted">— v3</span></h1>
+          <p class="muted">LLM local (WebGPU) + Supabase + Anexos + Escores + Gráficos + Modo leitura</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btn-download-model" class="btn btn-ghost">Baixar modelo</button>
+        <span id="model-status" class="badge">Modelo: <span id="model-name" class="ml-1 font-semibold">(não carregado)</span></span>
+        <div id="auth-box" class="ml-2"></div>
+      </div>
+    </header>
+
+    <div id="alerts"></div>
+
+    <!-- LOGIN -->
+    <section id="auth-card" class="card mb-6">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">Acesso</h2>
+        <span class="muted">Apenas você</span>
+      </div>
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <input id="email" type="email" placeholder="seu@email.com" class="w-full rounded-xl border p-3" />
+        <input id="password" type="password" placeholder="senha" class="w-full rounded-xl border p-3" />
+        <div class="flex gap-2">
+          <button id="btn-signup" class="btn btn-ghost w-full">Criar conta</button>
+          <button id="btn-login" class="btn btn-primary w-full">Entrar</button>
+        </div>
+      </div>
+      <p class="muted mt-3">Auth por Supabase. RLS ativa em todas as tabelas.</p>
+    </section>
+
+    <!-- HOME -->
+    <section id="home" class="hidden">
+      <div class="card mb-4">
+        <h2 class="text-lg font-semibold mb-2">Buscar paciente</h2>
+        <div class="flex gap-2">
+          <input id="search" class="flex-1 rounded-xl border p-3" placeholder="Nome do paciente" />
+          <button id="btn-new" class="btn btn-ghost">Novo paciente</button>
+        </div>
+      </div>
+      <div id="results" class="grid md:grid-cols-2 gap-4"></div>
+    </section>
+
+    <!-- NEW PATIENT -->
+    <section id="new-patient" class="hidden card mb-6">
+      <h2 class="text-lg font-semibold mb-2">Novo paciente</h2>
+      <div class="grid md:grid-cols-2 gap-3">
+        <input id="np-name" class="rounded-xl border p-3" placeholder="Nome completo" />
+        <input id="np-birth" type="date" class="rounded-xl border p-3" placeholder="Data de nascimento" />
+        <input id="np-dx" class="rounded-xl border p-3" placeholder="Diagnóstico principal" />
+        <input id="np-dx-year" class="rounded-xl border p-3" type="number" placeholder="Ano do diagnóstico" />
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button id="btn-save-patient" class="btn btn-primary">Salvar</button>
+        <button id="btn-cancel-patient" class="btn btn-ghost">Cancelar</button>
+      </div>
+    </section>
+
+    <!-- PATIENT PAGE -->
+    <section id="patient" class="hidden">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold">Prontuário • <span id="p-name" class="font-bold"></span></h2>
+        <div class="flex gap-2">
+          <button id="btn-export-pdf" class="btn btn-ghost">Exportar PDF</button>
+          <button id="btn-back" class="btn btn-ghost">← Voltar</button>
+        </div>
+      </div>
+
+      <!-- tabs -->
+      <div class="flex gap-2 mb-3">
+        <div class="tab active" data-tab="tab-resumo">Resumo</div>
+        <div class="tab" data-tab="tab-escores">Exames/Escores</div>
+        <div class="tab" data-tab="tab-graficos">Gráficos</div>
+        <div class="tab" data-tab="tab-leitura">Leitura rápida</div>
+        <div class="tab" data-tab="tab-anexos">Anexos</div>
+      </div>
+
+      <!-- Resumo -->
+      <div id="tab-resumo" class="grid-2">
+        <div class="card">
+          <h3 class="font-semibold mb-2">Resumo clínico (LLM)</h3>
+          <div class="grid grid-cols-2 gap-3">
+            <div><div class="muted">Idade</div><div id="p-age" class="font-semibold">—</div></div>
+            <div><div class="muted">Diagnóstico / ano</div><div id="p-dx" class="font-semibold">—</div></div>
+          </div>
+          <div class="mt-4 grid md:grid-cols-2 gap-4">
+            <div><div class="muted mb-1">Queixas iniciais</div><div id="p-initial" class="whitespace-pre-wrap"></div></div>
+            <div><div class="muted mb-1">Últimas consultas</div><div id="p-last-visits" class="whitespace-pre-wrap"></div></div>
+            <div><div class="muted mb-1">Antecedentes patológicos</div><div id="p-pmh" class="whitespace-pre-wrap"></div></div>
+            <div><div class="muted mb-1">Medicações em uso</div><div id="p-meds-current" class="whitespace-pre-wrap"></div></div>
+            <div><div class="muted mb-1">Medicações já usadas + motivo da retirada</div><div id="p-meds-past" class="whitespace-pre-wrap"></div></div>
+            <div><div class="muted mb-1">Exame neurológico — primeiro / último</div><div id="p-exams" class="whitespace-pre-wrap"></div></div>
+            <div class="md:col-span-2"><div class="muted mb-1">Resumo WhatsApp</div><div id="p-wa" class="whitespace-pre-wrap"></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="font-semibold mb-2">Mensagens novas do WhatsApp</h3>
+          <textarea id="wa-new" rows="10" class="w-full rounded-xl border p-3" placeholder="Cole aqui as mensagens novas do WhatsApp (texto bruto)"></textarea>
+          <button id="btn-process" class="btn btn-primary w-full mt-3">Processar informação</button>
+          <div id="llm-progress" class="muted mt-2"></div>
+          <div class="mt-4">
+            <h4 class="font-semibold">Resposta sugerida</h4>
+            <textarea id="suggested-reply" rows="8" class="w-full rounded-xl border p-3 mono"></textarea>
+            <div class="flex gap-2 mt-2">
+              <button id="btn-copy-reply" class="btn btn-ghost">Copiar</button>
+              <button id="btn-save-summary" class="btn btn-primary">Salvar resumo</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Escores -->
+      <div id="tab-escores" class="hidden">
+        <div class="grid md:grid-cols-2 gap-4">
+          <!-- UPDRS III -->
+          <div class="card">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-semibold">MDS-UPDRS Parte III</h3>
+              <div>Total: <span id="updrs-total" class="score">0</span></div>
+            </div>
+            <div class="grid md:grid-cols-3 gap-2 mb-3">
+              <div>
+                <label class="muted">Estado</label>
+                <select id="updrs-state" class="w-full rounded-xl border p-2">
+                  <option value="">—</option>
+                  <option value="OFF">OFF</option>
+                  <option value="ON">ON</option>
+                </select>
+              </div>
+              <div>
+                <label class="muted">Wearing-off</label>
+                <select id="updrs-wearing" class="w-full rounded-xl border p-2">
+                  <option value="">—</option>
+                  <option value="sim">Sim</option>
+                  <option value="nao">Não</option>
+                </select>
+              </div>
+              <div>
+                <label class="muted">Min desde última dose</label>
+                <input id="updrs-lastdose" type="number" class="w-full rounded-xl border p-2" placeholder="ex.: 60" />
+              </div>
+            </div>
+            <div id="updrs-form" class="space-y-2"></div>
+            <div class="mt-3 flex gap-2">
+              <input id="updrs-date" type="date" class="rounded-xl border p-2" />
+              <button id="btn-save-updrs" class="btn btn-primary">Salvar UPDRS-III</button>
+            </div>
+          </div>
+
+          <!-- SARA -->
+          <div class="card">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-semibold">SARA</h3>
+              <div>Total: <span id="sara-total" class="score">0.0</span> / 40</div>
+            </div>
+            <div id="sara-form" class="space-y-2"></div>
+            <div class="mt-3 flex gap-2">
+              <input id="sara-date" type="date" class="rounded-xl border p-2" />
+              <button id="btn-save-sara" class="btn btn-primary">Salvar SARA</button>
+            </div>
+          </div>
+
+          <!-- mFARS (custom template) -->
+          <div class="card md:col-span-2">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-semibold">mFARS (template customizável)</h3>
+              <div>Total: <span id="mfars-total" class="score">0</span></div>
+            </div>
+            <div id="mfars-form" class="space-y-2"></div>
+            <div class="mt-3 flex gap-2">
+              <input id="mfars-date" type="date" class="rounded-xl border p-2" />
+              <button id="btn-save-mfars" class="btn btn-primary">Salvar mFARS</button>
+            </div>
+            <p class="muted mt-2">Obs.: Template personalizável; não substitui o instrumento oficial.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gráficos -->
+      <div id="tab-graficos" class="hidden">
+        <div class="grid md:grid-cols-3 gap-4">
+          <div class="card"><h3 class="font-semibold mb-2">UPDRS-III (evolução)</h3><canvas id="chart-updrs" height="160"></canvas></div>
+          <div class="card"><h3 class="font-semibold mb-2">SARA (evolução)</h3><canvas id="chart-sara" height="160"></canvas></div>
+          <div class="card"><h3 class="font-semibold mb-2">mFARS (evolução)</h3><canvas id="chart-mfars" height="160"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Leitura rápida -->
+      <div id="tab-leitura" class="hidden">
+        <div class="card">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="font-semibold">Leitura rápida (highlights)</h3>
+            <button id="btn-refresh-quick" class="btn btn-ghost">Atualizar</button>
+          </div>
+          <div id="quick-body" class="space-y-3"></div>
+        </div>
+      </div>
+
+      <!-- Anexos -->
+      <div id="tab-anexos" class="hidden">
+        <div class="card">
+          <h3 class="font-semibold mb-2">Anexos do paciente</h3>
+          <input id="file-input" type="file" multiple class="mb-3" />
+          <button id="btn-upload" class="btn btn-primary">Enviar anexos</button>
+          <div id="upload-status" class="muted mt-2"></div>
+          <h4 class="font-semibold mt-4 mb-2">Arquivos</h4>
+          <div id="file-list" class="space-y-2"></div>
+        </div>
+      </div>
+
+    </section>
+  </div>
+
+  <!-- CONFIG + APP LOGIC -->
+  <script>
+    // ======================= CONFIG =======================
+    const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co"; // <- troque
+    const SUPABASE_ANON_KEY = "YOUR-ANON-KEY"; // <- troque
+
+    const HAS_WEBGPU = !!(navigator.gpu);
+
+    // Opcional: seu endpoint Ollama (https recomendado). Deixe vazio para usar WebLLM local.
+    const OLLAMA_API_URL = "";
+    const OLLAMA_MODEL = "llama3.1:8b-instruct-q4_0";
+
+    const WEBLLM_MODEL = "Llama-3.1-8B-Instruct-q4f16_1-MLC"; // MLC
+
+    const STORAGE_BUCKET = "attachments";
+
+    // ======================= APP STATE =======================
+    const app = {
+      supabase: null,
+      session: null,
+      engine: null,
+      activePatient: null,
+      scales: { updrs: {}, sara: {}, mfars: {} },
+      charts: { updrs: null, sara: null, mfars: null },
+      cacheExams: [] // all neuro_exams for charts/quick read
+    };
+
+    // ======================= UTILS =======================
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+    const show = (id) => $(id).classList.remove('hidden');
+    const hide = (id) => $(id).classList.add('hidden');
+    function alertBox(type, text) {
+      const colors = { info: 'bg-blue-50 border-blue-200', warn: 'bg-amber-50 border-amber-200', err: 'bg-red-50 border-red-200', ok: 'bg-emerald-50 border-emerald-200' };
+      $('#alerts').innerHTML = `<div class="border ${colors[type]} rounded-xl p-3 mb-4">${text}</div>`;
+      setTimeout(()=> { $('#alerts').innerHTML = '' }, 7000);
+    }
+    function ageFromBirth(dateStr) {
+      if (!dateStr) return null;
+      const dob = new Date(dateStr);
+      const diff = Date.now() - dob.getTime();
+      const a = new Date(diff);
+      return Math.abs(a.getUTCFullYear() - 1970);
+    }
+    const todayStr = () => new Date().toISOString().slice(0,10);
+    const to2 = (n) => Math.round(n * 100) / 100;
+
+    // ======================= INIT =======================
+    document.addEventListener('DOMContentLoaded', async () => {
+      app.supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+      // Auth
+      $('#btn-signup').addEventListener('click', signup);
+      $('#btn-login').addEventListener('click', login);
+
+      // Nav
+      $('#btn-new').addEventListener('click', () => { show('#new-patient'); });
+      $('#btn-cancel-patient').addEventListener('click', () => { hide('#new-patient'); });
+      $('#btn-save-patient').addEventListener('click', savePatient);
+      $('#search').addEventListener('input', debounce(searchPatients, 300));
+      $('#btn-back').addEventListener('click', () => { hide('#patient'); show('#home'); });
+      $('#btn-download-model').addEventListener('click', ensureModel);
+
+      // Tabs
+      $$('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+
+      // LLM process
+      $('#btn-process').addEventListener('click', processInfo);
+      $('#btn-copy-reply').addEventListener('click', copyReply);
+      $('#btn-save-summary').addEventListener('click', saveSummary);
+
+      // Scales save
+      $('#btn-save-updrs').addEventListener('click', saveUPDRS);
+      $('#btn-save-sara').addEventListener('click', saveSARA);
+      $('#btn-save-mfars').addEventListener('click', saveMFARS);
+
+      // Quick read
+      $('#btn-refresh-quick').addEventListener('click', buildQuickRead);
+
+      // Attachments
+      $('#btn-upload').addEventListener('click', uploadFiles);
+
+      // PDF
+      $('#btn-export-pdf').addEventListener('click', exportPDF);
+
+      // session restore
+      const { data: { session } } = await app.supabase.auth.getSession();
+      if (session) {
+        app.session = session;
+        hide('#auth-card'); show('#home'); renderAuthBox(); searchPatients();
+      }
+      app.supabase.auth.onAuthStateChange((_event, session) => {
+        app.session = session;
+        if (session) { hide('#auth-card'); show('#home'); renderAuthBox(); searchPatients(); }
+        else { show('#auth-card'); hide('#home'); hide('#patient'); renderAuthBox(); }
+      });
+
+      if (!HAS_WEBGPU && !OLLAMA_API_URL) {
+        alertBox('warn', 'Sem WebGPU e sem OLLAMA_API_URL. Configure fallback para inferência remota.');
+      }
+
+      // Render scales
+      renderUPDRS();
+      renderSARA();
+      renderMFARS();
+    });
+
+    function renderAuthBox() {
+      const el = $('#auth-box');
+      if (!app.session) { el.innerHTML = ''; return; }
+      const email = app.session.user.email || 'you';
+      el.innerHTML = `<span class="badge">${email}</span> <button class="btn btn-ghost" onclick="logout()">Sair</button>`;
+    }
+
+    async function signup() {
+      const email = $('#email').value.trim();
+      const password = $('#password').value.trim();
+      const { error } = await app.supabase.auth.signUp({ email, password });
+      if (error) return alertBox('err', 'Erro ao criar conta: ' + error.message);
+      alertBox('ok', 'Conta criada. Verifique seu email, depois faça login.');
+    }
+    async function login() {
+      const email = $('#email').value.trim();
+      const password = $('#password').value.trim();
+      const { error } = await app.supabase.auth.signInWithPassword({ email, password });
+      if (error) return alertBox('err', 'Erro ao entrar: ' + error.message);
+      alertBox('ok', 'Login efetuado.');
+    }
+    async function logout() {
+      await app.supabase.auth.signOut();
+      alertBox('info', 'Sessão encerrada.');
+    }
+
+    async function savePatient() {
+      const full_name = $('#np-name').value.trim();
+      const birth_date = $('#np-birth').value || null;
+      const diagnosis = $('#np-dx').value.trim() || null;
+      const diagnosis_year = parseInt($('#np-dx-year').value) || null;
+      if (!full_name) return alertBox('warn', 'Informe o nome.');
+      const { error } = await app.supabase.from('patients').insert([{ full_name, birth_date, diagnosis, diagnosis_year }]);
+      if (error) return alertBox('err', 'Erro ao salvar: ' + error.message);
+      hide('#new-patient');
+      $('#np-name').value = ''; $('#np-birth').value = ''; $('#np-dx').value = ''; $('#np-dx-year').value = '';
+      alertBox('ok', 'Paciente criado.'); searchPatients();
+    }
+
+    async function searchPatients() {
+      const q = $('#search').value?.trim() || '';
+      let query = app.supabase.from('patients').select('*').order('updated_at', { ascending: false }).limit(50);
+      if (q) query = app.supabase.from('patients').select('*').ilike('full_name', `%${q}%`).order('full_name');
+      const { data, error } = await query;
+      if (error) return alertBox('err', 'Erro na busca: ' + error.message);
+      const list = data || [];
+      const container = $('#results');
+      container.innerHTML = list.map(p => `
+        <div class="card">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="font-semibold">${p.full_name}</div>
+              <div class="muted">${p.diagnosis || '—'} ${p.diagnosis_year ? '('+p.diagnosis_year+')' : ''}</div>
+            </div>
+            <button class="btn btn-primary" onclick='openPatient(${JSON.stringify(p)})'>Abrir</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function openPatient(p) {
+      app.activePatient = p;
+      hide('#home'); show('#patient');
+      switchTab('tab-resumo');
+      $('#p-name').textContent = p.full_name;
+      $('#p-dx').textContent = `${p.diagnosis || '—'} ${p.diagnosis_year ? '('+p.diagnosis_year+')' : ''}`;
+      $('#p-age').textContent = ageFromBirth(p.birth_date) ?? '—';
+
+      // Load related data
+      const [visits, meds, exams, wa] = await Promise.all([
+        app.supabase.from('visits').select('*').eq('patient_id', p.id).order('visit_date', { ascending: false }),
+        app.supabase.from('meds').select('*').eq('patient_id', p.id).order('created_at', { ascending: false }),
+        app.supabase.from('neuro_exams').select('*').eq('patient_id', p.id).order('exam_date', { ascending: true }),
+        app.supabase.from('whatsapp_messages').select('*').eq('patient_id', p.id).order('pasted_at', { ascending: true }),
+      ]);
+
+      app.cacheExams = exams.data || [];
+
+      const vData = visits.data || [];
+      $('#p-last-visits').textContent = vData.slice(0,3).map(v => `• ${v.visit_date}: ${v.notes || ''}`).join('\n') || '—';
+
+      const current = (meds.data || []).filter(m => m.status === 'current');
+      const past = (meds.data || []).filter(m => m.status === 'past');
+      $('#p-meds-current').textContent = current.map(m => `• ${m.name} ${m.dose || ''} ${m.schedule || ''}`).join('\n') || '—';
+      $('#p-meds-past').textContent = past.map(m => `• ${m.name} — motivo: ${m.stop_reason || 'n/d'}`).join('\n') || '—';
+
+      const eData = app.cacheExams;
+      const firstExam = eData[0]; const lastExam = eData[eData.length-1];
+      function prettyExam(json) {
+        if (!json) return '';
+        try { if (typeof json === 'string') json = JSON.parse(json);
+          const keys = Object.keys(json);
+          return keys.map(k => `${k}: ${typeof json[k]==='object'? JSON.stringify(json[k]) : json[k]}`).join(' | ');
+        } catch { return ''; }
+      }
+      $('#p-exams').textContent = `${firstExam ? `${firstExam.exam_date}: ${prettyExam(firstExam.content)}` : '—'}\n\n${lastExam && lastExam !== firstExam ? `${lastExam.exam_date}: ${prettyExam(lastExam.content)}` : ''}`.trim();
+
+      const waData = wa.data || [];
+      function summarizeOneLine(parsed) {
+        if (!parsed) return null;
+        try { const t = typeof parsed === 'string' ? JSON.parse(parsed) : parsed; return t?.summary_one_line || null; } catch { return null; }
+      }
+      $('#p-wa').textContent = waData.map(w => `• ${new Date(w.pasted_at).toLocaleDateString()}: ${summarizeOneLine(w.parsed) || (w.raw_text?.slice(0,120)+'…')}`).join('\n') || '—';
+
+      await listFiles();
+      await drawAllCharts();
+      await buildQuickRead();
+    }
+
+    // Tabs
+    function switchTab(id) {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      $(`.tab[data-tab="${id}"]`)?.classList.add('active');
+      ['#tab-resumo','#tab-escores','#tab-graficos','#tab-leitura','#tab-anexos'].forEach(sel => hide(sel));
+      show(`#${id}`);
+    }
+
+    // LLM
+    async function ensureModel() {
+      if (!HAS_WEBGPU && !OLLAMA_API_URL) {
+        alertBox('err', 'Sem WebGPU e sem OLLAMA_API_URL. Configure fallback.');
+        return false;
+      }
+      if (OLLAMA_API_URL) {
+        $('#model-name').textContent = `Ollama (${OLLAMA_MODEL})`;
+        alertBox('ok', 'Usando Ollama remoto.');
+        return true;
+      }
+      if (app.engine) { alertBox('info', 'Modelo já carregado.'); return true; }
+      try {
+        $('#model-status').classList.add('bg-amber-100');
+        $('#model-name').textContent = 'baixando…';
+        const { CreateMLCEngine } = window._webllm || {};
+        if (!CreateMLCEngine) { alertBox('err', 'WebLLM não carregou.'); return false; }
+        app.engine = await CreateMLCEngine({ model: WEBLLM_MODEL, wasm: { numThreads: 2 } }, { initProgressCallback: (p) => { $('#model-name').textContent = `${WEBLLM_MODEL} ${Math.round((p.progress||0)*100)}%`; }});
+        $('#model-status').classList.remove('bg-amber-100');
+        $('#model-name').textContent = WEBLLM_MODEL;
+        alertBox('ok', 'Modelo carregado no navegador.');
+        return true;
+      } catch (e) { console.error(e); alertBox('err','Falha ao carregar o modelo.'); return false; }
+    }
+
+    async function llmComplete(prompt) {
+      if (OLLAMA_API_URL) {
+        const resp = await fetch(`${OLLAMA_API_URL}/api/generate`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream:false }) });
+        if (!resp.ok) throw new Error('Ollama error');
+        const data = await resp.json();
+        return data.response;
+      }
+      if (!app.engine) throw new Error('Modelo não carregado.');
+      const out = await app.engine.chat.completions.create({
+        messages: [ { role: 'system', content: 'Você é um assistente clínico que resume prontuários. Responda SOMENTE em JSON válido.' }, { role: 'user', content: prompt } ],
+        temperature: 0.2, max_tokens: 1024
+      });
+      return out.choices?.[0]?.message?.content || '';
+    }
+
+    function buildPrompt(patient, visits, meds, exams, previousWA, newWARaw) {
+      const prompt = `Dados do paciente (JSON):\n${JSON.stringify(patient)}\n\nConsultas (mais recentes primeiro):\n${JSON.stringify(visits.slice(0,6))}\n\nMedicacoes (todas):\n${JSON.stringify(meds)}\n\nExames (ordem cronologica):\n${JSON.stringify(exams)}\n\nHistorico whatsapp resumido (se houver):\n${JSON.stringify(previousWA)}\n\nMensagens novas do WhatsApp (texto bruto colado):\n\n${newWARaw}\n\nTarefa: Gere um JSON estritamente valido com a seguinte estrutura:\n{\n  "age": number | null,\n  "diagnosis": string | null,\n  "diagnosis_year": number | null,\n  "initial_complaints": string,\n  "last_visits_summary": string,\n  "past_medical_history": string,\n  "meds_current": string,\n  "meds_past_with_reasons": string,\n  "whatsapp_history_summary": string,\n  "first_neuro_exam": string,\n  "last_neuro_exam": string,\n  "new_complaints_summary": string,\n  "suggested_reply": string\n}\n\nRegras:\n- Português, objetivo, registro clínico.\n- Compacte com relevância clínica.\n- Onde faltar info, use null ou "—".\n- Em "suggested_reply": texto curto e empático para WhatsApp, com red flags. `;
+      return prompt;
+    }
+
+    async function processInfo() {
+      if (!app.activePatient) return;
+      const raw = $('#wa-new').value.trim();
+      if (!raw) return alertBox('warn', 'Cole as mensagens do WhatsApp.');
+
+      $('#llm-progress').textContent = 'Carregando modelo…';
+      const ok = await ensureModel();
+      if (!ok) { $('#llm-progress').textContent=''; return; }
+
+      const [visits, meds, exams, wa] = await Promise.all([
+        app.supabase.from('visits').select('*').eq('patient_id', app.activePatient.id).order('visit_date',{ascending:false}),
+        app.supabase.from('meds').select('*').eq('patient_id', app.activePatient.id).order('created_at',{ascending:false}),
+        app.supabase.from('neuro_exams').select('*').eq('patient_id', app.activePatient.id).order('exam_date',{ascending:true}),
+        app.supabase.from('whatsapp_messages').select('*').eq('patient_id', app.activePatient.id).order('pasted_at',{ascending:true}),
+      ]);
+
+      const prompt = buildPrompt(app.activePatient, visits.data||[], meds.data||[], exams.data||[], wa.data||[], raw);
+      $('#llm-progress').textContent = 'Processando com LLM…';
+      let out = '';
+      try { out = await llmComplete(prompt); }
+      catch(e){ console.error(e); alertBox('err','Falha na inferência.'); $('#llm-progress').textContent=''; return; }
+
+      let js;
+      try { js = JSON.parse(out); } catch(e){ const m = out.match(/\{[\s\S]*\}/); if (m) { try { js = JSON.parse(m[0]); } catch {} } }
+      if (!js) { alertBox('warn','LLM não retornou JSON válido.'); $('#llm-progress').textContent=''; return; }
+
+      $('#suggested-reply').value = js.suggested_reply || '';
+      $('#p-initial').textContent = js.initial_complaints || $('#p-initial').textContent;
+      $('#p-last-visits').textContent = js.last_visits_summary || $('#p-last-visits').textContent;
+      $('#p-pmh').textContent = js.past_medical_history || $('#p-pmh').textContent;
+      $('#p-meds-current').textContent = js.meds_current || $('#p-meds-current').textContent;
+      $('#p-meds-past').textContent = js.meds_past_with_reasons || $('#p-meds-past').textContent;
+      $('#p-wa').textContent = js.whatsapp_history_summary || $('#p-wa').textContent;
+      $('#p-exams').textContent = `${js.first_neuro_exam || ''}\n\n${js.last_neuro_exam || ''}`.trim();
+
+      const { data: waRow, error: waErr } = await app.supabase.from('whatsapp_messages').insert([{ patient_id: app.activePatient.id, raw_text: raw, parsed: { summary_one_line: js.new_complaints_summary || '' } }]).select().single();
+      if (waErr) console.error(waErr);
+
+      const { error: sumErr } = await app.supabase.from('summaries').insert([{ patient_id: app.activePatient.id, llm_model: (OLLAMA_API_URL ? `ollama:${OLLAMA_MODEL}` : `webllm:${WEBLLM_MODEL}`), input_ref: waRow?.id || null, output: js }]);
+      if (sumErr) console.error(sumErr);
+
+      $('#llm-progress').textContent = 'Concluído.';
+      alertBox('ok','Resumo gerado.');
+      await buildQuickRead();
+    }
+
+    // ======================= SCALES =======================
+    const UPDRS_ITEMS = [
+      ["3.1","Fala"], ["3.2","Expressão facial"],
+      ["3.3_Neck","Rigidez pescoço"], ["3.3_RUE","Rigidez MS direito"], ["3.3_LUE","Rigidez MS esquerdo"], ["3.3_RLE","Rigidez MI direito"], ["3.3_LLE","Rigidez MI esquerdo"],
+      ["3.4_R","Tocar dedos (dir)"], ["3.4_L","Tocar dedos (esq)"],
+      ["3.5_R","Mov. mão (dir)"], ["3.5_L","Mov. mão (esq)"],
+      ["3.6_R","Pronação-supinação (dir)"], ["3.6_L","Pronação-supinação (esq)"],
+      ["3.7_R","Tocar dedos pé (dir)"], ["3.7_L","Tocar dedos pé (esq)"],
+      ["3.8_R","Agilidade perna (dir)"], ["3.8_L","Agilidade perna (esq)"],
+      ["3.9","Levantar da cadeira"],
+      ["3.10","Marcha"], ["3.11","Congelamento da marcha"],
+      ["3.12","Estabilidade postural"], ["3.13","Postura"], ["3.14","Bradicinesia global"],
+      ["3.15_R","Tremor postural mãos (dir)"], ["3.15_L","Tremor postural mãos (esq)"],
+      ["3.16_R","Tremor cinético mãos (dir)"], ["3.16_L","Tremor cinético mãos (esq)"],
+      ["3.17_RUE","Tremor de repouso MS dir"], ["3.17_LUE","Tremor de repouso MS esq"],
+      ["3.17_RLE","Tremor de repouso MI dir"], ["3.17_LLE","Tremor de repouso MI esq"],
+      ["3.17_Jaw","Tremor repouso lábio/mandíbula"],
+      ["3.18","Constância do tremor de repouso"]
+    ];
+    function renderUPDRS() {
+      const root = $('#updrs-form'); root.innerHTML = '';
+      UPDRS_ITEMS.forEach(([key,label]) => {
+        const id = `updrs_${key.replace(/[.\s]/g,'_')}`;
+        const row = document.createElement('div');
+        row.innerHTML = `
+          <div class="flex items-center gap-3">
+            <label for="${id}" class="flex-1">${label}</label>
+            <span class="badge mono" id="${id}_val">0</span>
+          </div>
+          <input type="range" min="0" max="4" step="1" id="${id}" />
+        `;
+        root.appendChild(row);
+        const input = row.querySelector(`#${id}`);
+        input.addEventListener('input', () => { $(`#${id}_val`).textContent = input.value; computeUPDRS(); });
+      });
+      $('#updrs-date').value = todayStr();
+      computeUPDRS();
+    }
+    function computeUPDRS() {
+      let total = 0; app.scales.updrs = {};
+      UPDRS_ITEMS.forEach(([key,label]) => {
+        const id = `updrs_${key.replace(/[.\s]/g,'_')}`;
+        const v = parseInt( $(`#${id}`).value || '0', 10 );
+        app.scales.updrs[key] = v; total += v;
+      });
+      $('#updrs-total').textContent = total;
+      app.scales.updrs_total = total;
+    }
+    async function saveUPDRS() {
+      if (!app.activePatient) return alertBox('warn','Selecione um paciente.');
+      const exam_date = $('#updrs-date').value || todayStr();
+      const payload = {
+        scale: 'UPDRS-III',
+        items: app.scales.updrs,
+        total: app.scales.updrs_total,
+        state: $('#updrs-state').value || null,
+        wearing_off: $('#updrs-wearing').value === 'sim' ? true : ($('#updrs-wearing').value === 'nao' ? false : null),
+        minutes_since_last_dose: ($('#updrs-lastdose').value ? parseInt($('#updrs-lastdose').value,10) : null)
+      };
+      const { error } = await app.supabase.from('neuro_exams').insert([{ patient_id: app.activePatient.id, exam_date, content: payload }]);
+      if (error) return alertBox('err','Erro ao salvar UPDRS-III: '+error.message);
+      alertBox('ok','UPDRS-III salvo.');
+      await reloadExamsAndCharts();
+    }
+
+    // SARA
+    function renderSARA() {
+      const items = [
+        {key:'gait', label:'Gait (0–8)', min:0, max:8},
+        {key:'stance', label:'Stance (0–6)', min:0, max:6},
+        {key:'sitting', label:'Sitting (0–4)', min:0, max:4},
+        {key:'speech', label:'Speech disturbance (0–6)', min:0, max:6},
+        {key:'finger_L', label:'Finger chase Left (0–4)', min:0, max:4},
+        {key:'finger_R', label:'Finger chase Right (0–4)', min:0, max:4},
+        {key:'nose_L', label:'Nose–finger Left (0–4)', min:0, max:4},
+        {key:'nose_R', label:'Nose–finger Right (0–4)', min:0, max:4},
+        {key:'fast_L', label:'Fast alt. hands Left (0–4)', min:0, max:4},
+        {key:'fast_R', label:'Fast alt. hands Right (0–4)', min:0, max:4},
+        {key:'heel_L', label:'Heel–shin Left (0–4)', min:0, max:4},
+        {key:'heel_R', label:'Heel–shin Right (0–4)', min:0, max:4},
+      ];
+      const root = $('#sara-form'); root.innerHTML='';
+      items.forEach(it => {
+        const id = `sara_${it.key}`;
+        const row = document.createElement('div');
+        row.innerHTML = `
+          <div class="flex items-center gap-3">
+            <label for="${id}" class="flex-1">${it.label}</label>
+            <span class="badge mono" id="${id}_val">0</span>
+          </div>
+          <input type="range" min="${it.min}" max="${it.max}" step="1" id="${id}" />
+        `;
+        root.appendChild(row);
+        const input = row.querySelector(`#${id}`);
+        input.addEventListener('input', () => { $(`#${id}_val`).textContent = input.value; computeSARA(); });
+      });
+      $('#sara-date').value = todayStr();
+      computeSARA();
+    }
+    function computeSARA() {
+      const vals = {
+        gait: +($('#sara_gait').value||0),
+        stance: +($('#sara_stance').value||0),
+        sitting: +($('#sara_sitting').value||0),
+        speech: +($('#sara_speech').value||0),
+        finger_L: +($('#sara_finger_L').value||0), finger_R: +($('#sara_finger_R').value||0),
+        nose_L: +($('#sara_nose_L').value||0), nose_R: +($('#sara_nose_R').value||0),
+        fast_L: +($('#sara_fast_L').value||0), fast_R: +($('#sara_fast_R').value||0),
+        heel_L: +($('#sara_heel_L').value||0), heel_R: +($('#sara_heel_R').value||0),
+      };
+      const avgFinger = (vals.finger_L + vals.finger_R)/2;
+      const avgnose = (vals.nose_L + vals.nose_R)/2;
+      const avgfast = (vals.fast_L + vals.fast_R)/2;
+      const avgheel = (vals.heel_L + vals.heel_R)/2;
+      const total = vals.gait + vals.stance + vals.sitting + vals.speech + avgFinger + avgnose + avgfast + avgheel;
+      app.scales.sara = { ...vals, total: to2(total) };
+      $('#sara-total').textContent = to2(total);
+    }
+    async function saveSARA() {
+      if (!app.activePatient) return alertBox('warn','Selecione um paciente.');
+      const exam_date = $('#sara-date').value || todayStr();
+      const { error } = await app.supabase.from('neuro_exams').insert([{ patient_id: app.activePatient.id, exam_date, content: { scale:'SARA', ...app.scales.sara } }]);
+      if (error) return alertBox('err','Erro ao salvar SARA: '+error.message);
+      alertBox('ok','SARA salva.');
+      await reloadExamsAndCharts();
+    }
+
+    // mFARS custom template
+    const MFARS_DEFAULT = Array.from({length:12}).map((_,i)=>({ key:`item_${i+1}`, label:`Item ${i+1}`, min:0, max:4 }));
+    function renderMFARS() {
+      const root = $('#mfars-form'); root.innerHTML='';
+      MFARS_DEFAULT.forEach((it, idx) => {
+        const id = `mfars_${it.key}`;
+        const row = document.createElement('div');
+        row.innerHTML = `
+          <div class="flex items-center gap-3">
+            <input value="${it.label}" class="rounded-xl border p-2 flex-1" id="${id}_label" />
+            <span class="badge mono" id="${id}_val">0</span>
+          </div>
+          <input type="range" min="${it.min}" max="${it.max}" step="1" id="${id}" />
+        `;
+        root.appendChild(row);
+        const input = row.querySelector(`#${id}`);
+        input.addEventListener('input', () => { $(`#${id}_val`).textContent = input.value; computeMFARS(); });
+      });
+      $('#mfars-date').value = todayStr();
+      computeMFARS();
+    }
+    function computeMFARS() {
+      let total = 0; const items = {};
+      MFARS_DEFAULT.forEach(it => {
+        const id = `mfars_${it.key}`;
+        const v = +($(`#${id}`).value||0); total += v;
+        const label = $(`#${id}_label`).value || it.label;
+        items[label] = v;
+      });
+      app.scales.mfars = { items, total };
+      $('#mfars-total').textContent = total;
+    }
+    async function saveMFARS() {
+      if (!app.activePatient) return alertBox('warn','Selecione um paciente.');
+      const exam_date = $('#mfars-date').value || todayStr();
+      const payload = { scale:'mFARS (custom template)', ...app.scales.mfars };
+      const { error } = await app.supabase.from('neuro_exams').insert([{ patient_id: app.activePatient.id, exam_date, content: payload }]);
+      if (error) return alertBox('err','Erro ao salvar mFARS: '+error.message);
+      alertBox('ok','mFARS salvo.');
+      await reloadExamsAndCharts();
+    }
+
+    // ======================= CHARTS =======================
+    async function reloadExamsAndCharts() {
+      const { data } = await app.supabase.from('neuro_exams').select('*').eq('patient_id', app.activePatient.id).order('exam_date', { ascending: true });
+      app.cacheExams = data || [];
+      await drawAllCharts();
+      await buildQuickRead();
+    }
+    function extractSeries(scaleName) {
+      const rows = app.cacheExams.filter(r => {
+        try { const c = (typeof r.content==='string') ? JSON.parse(r.content) : r.content; return (c?.scale || '').toLowerCase().includes(scaleName.toLowerCase()); } catch { return false; }
+      });
+      const labels = []; const values = [];
+      rows.forEach(r => {
+        const c = (typeof r.content==='string') ? JSON.parse(r.content) : r.content;
+        let v = c?.total;
+        if (v === undefined) {
+          // mFARS custom: total em c.total
+          if (c?.items) { v = Object.values(c.items).reduce((a,b)=>a+Number(b||0),0); }
+        }
+        if (v !== undefined && v !== null) { labels.push(r.exam_date); values.push(Number(v)); }
+      });
+      return { labels, values };
+    }
+    async function drawAllCharts() {
+      const ctxU = $('#chart-updrs').getContext('2d');
+      const ctxS = $('#chart-sara').getContext('2d');
+      const ctxM = $('#chart-mfars').getContext('2d');
+      const up = extractSeries('UPDRS-III');
+      const sa = extractSeries('SARA');
+      const mf = extractSeries('mFARS');
+
+      // destroy old
+      ['updrs','sara','mfars'].forEach(k => { if (app.charts[k]) { app.charts[k].destroy(); app.charts[k] = null; } });
+
+      const common = { responsive: true, plugins: { legend: { display:false } }, scales: { x: { ticks: { maxRotation: 0 } }, y: { beginAtZero: true } } };
+      app.charts.updrs = new Chart(ctxU, { type:'line', data: { labels: up.labels, datasets: [{ label:'UPDRS-III', data: up.values }] }, options: common });
+      app.charts.sara  = new Chart(ctxS, { type:'line', data: { labels: sa.labels, datasets: [{ label:'SARA', data: sa.values }] }, options: common });
+      app.charts.mfars = new Chart(ctxM, { type:'line', data: { labels: mf.labels, datasets: [{ label:'mFARS', data: mf.values }] }, options: common });
+    }
+
+    // ======================= QUICK READ =======================
+    async function buildQuickRead() {
+      const box = $('#quick-body'); box.innerHTML = '';
+      const lines = [];
+
+      // Últimas tendências
+      function trend(scale) {
+        const s = extractSeries(scale);
+        if (s.values.length >= 2) {
+          const last = s.values[s.values.length-1], prev = s.values[s.values.length-2];
+          const diff = (last - prev);
+          const arrow = diff>0 ? '↑' : (diff<0 ? '↓' : '→');
+          return `${scale}: ${last} (${arrow} ${diff>0?'+':''}${diff.toFixed(1)})`;
+        } else if (s.values.length === 1) {
+          return `${scale}: ${s.values[0]}`;
+        }
+        return `${scale}: —`;
+      }
+      lines.push(`Tendências: ${trend('UPDRS-III')} • ${trend('SARA')} • ${trend('mFARS')}`);
+
+      // Últimas 3 condutas/visitas (do campo 'Últimas consultas' já renderizado)
+      const lastVisits = ($('#p-last-visits').textContent || '').split('\n').slice(0,3).filter(Boolean);
+      if (lastVisits.length) {
+        lines.push('Últimas consultas:');
+        lastVisits.forEach(v => lines.push('• ' + v));
+      }
+
+      // Medicações atuais (primeiras 3 linhas)
+      const meds = ($('#p-meds-current').textContent || '').split('\n').slice(0,3).filter(Boolean);
+      if (meds.length) {
+        lines.push('Em uso:');
+        meds.forEach(m => lines.push('• ' + m));
+      }
+
+      // Estado motor mais recente (se houver UPDRS salvo com state/wearing_off)
+      const upRows = app.cacheExams.filter(r => {
+        try { const c = (typeof r.content==='string') ? JSON.parse(r.content) : r.content; return (c?.scale||'').includes('UPDRS-III'); } catch { return false; }
+      });
+      if (upRows.length) {
+        const last = upRows[upRows.length-1];
+        const c = (typeof last.content==='string') ? JSON.parse(last.content) : last.content;
+        const st = c?.state ? `estado ${c.state}` : 'estado —';
+        const wo = (c?.wearing_off===true) ? 'wearing-off: sim' : (c?.wearing_off===false) ? 'wearing-off: não' : 'wearing-off: —';
+        const md = (c?.minutes_since_last_dose!=null) ? `${c.minutes_since_last_dose} min pós-dose` : 'tempo pós-dose —';
+        lines.push(`UPDRS último: total ${c?.total ?? '—'} (${st}; ${wo}; ${md})`);
+      }
+
+      // Red flags simples (heurística sobre texto do WhatsApp/últimas consultas)
+      const textPool = [ $('#p-wa').textContent, $('#p-last-visits').textContent ].join(' ').toLowerCase();
+      const redFlags = [];
+      ['queda','sincope','dispneia','dor toracica','febre alta','déficit súbito','convuls','reatividade reduzida'].forEach(flag => {
+        if (textPool.includes(flag)) redFlags.push(flag);
+      });
+      if (redFlags.length) {
+        lines.push('⚠️ Red flags recentes citadas: ' + redFlags.join(', '));
+      }
+
+      // Render
+      lines.forEach(t => {
+        const p = document.createElement('p');
+        p.textContent = t; box.appendChild(p);
+      });
+    }
+
+    // ======================= ATTACHMENTS (Supabase Storage) =======================
+    async function uploadFiles() {
+      if (!app.activePatient) return alertBox('warn','Selecione um paciente.');
+      const files = $('#file-input').files;
+      if (!files || !files.length) return alertBox('warn','Selecione arquivos.');
+      $('#upload-status').textContent = 'Enviando…';
+      const uid = app.session.user.id;
+      for (const file of files) {
+        const path = `${uid}/${app.activePatient.id}/${Date.now()}_${file.name}`;
+        const { data, error } = await app.supabase.storage.from(STORAGE_BUCKET).upload(path, file, { cacheControl: '3600', upsert: false, contentType: file.type });
+        if (error) { console.error(error); alertBox('err','Falha ao enviar: '+file.name); }
+      }
+      $('#upload-status').textContent = 'Envio concluído.';
+      await listFiles();
+    }
+
+    async function listFiles() {
+      if (!app.activePatient || !app.session) return;
+      const prefix = `${app.session.user.id}/${app.activePatient.id}`;
+      const { data, error } = await app.supabase.storage.from(STORAGE_BUCKET).list(prefix, { limit: 100, offset: 0, sortBy: { column:'name', order:'desc' } });
+      const box = $('#file-list'); box.innerHTML = '';
+      if (error) { console.error(error); box.innerHTML = '<div class="muted">Erro ao listar anexos</div>'; return; }
+      if (!data || !data.length) { box.innerHTML = '<div class="muted">Sem anexos.</div>'; return; }
+      for (const obj of data) {
+        const fullPath = `${prefix}/${obj.name}`;
+        const { data: signed } = await app.supabase.storage.from(STORAGE_BUCKET).createSignedUrl(fullPath, 60*10);
+        const div = document.createElement('div');
+        div.className = 'flex items-center justify-between p-2 rounded-lg border';
+        div.innerHTML = `<span class="truncate">${obj.name}</span>
+          <div class="flex gap-2">
+            <a class="btn btn-ghost" href="${signed?.signedUrl}" target="_blank" rel="noopener">Abrir</a>
+            <button class="btn btn-ghost" data-del="${fullPath}">Excluir</button>
+          </div>`;
+        box.appendChild(div);
+        div.querySelector('[data-del]').addEventListener('click', async () => {
+          await app.supabase.storage.from(STORAGE_BUCKET).remove([fullPath]);
+          listFiles();
+        });
+      }
+    }
+
+    // ======================= PDF EXPORT =======================
+    async function exportPDF() {
+      if (!app.activePatient) return alertBox('warn','Selecione um paciente.');
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+      const pad = 10; let y = 15;
+      const add = (text, sz=12, bold=false) => {
+        doc.setFont('helvetica', bold ? 'bold' : 'normal'); doc.setFontSize(sz);
+        const lines = doc.splitTextToSize(text, 190);
+        doc.text(lines, pad, y); y += lines.length * (sz>12? 6:5) + 3;
+      };
+
+      add(`Paciente: ${app.activePatient.full_name}`, 16, true);
+      add(`Diagnóstico: ${app.activePatient.diagnosis || '—'} ${app.activePatient.diagnosis_year? '('+app.activePatient.diagnosis_year+')':''}`, 12);
+      add(`Idade: ${ageFromBirth(app.activePatient.birth_date) ?? '—'}`, 12);
+
+      add('— Resumo clínico', 14, true);
+      add('Queixas iniciais:\n' + ($('#p-initial').textContent || '—'));
+      add('Últimas consultas:\n' + ($('#p-last-visits').textContent || '—'));
+      add('AP:\n' + ($('#p-pmh').textContent || '—'));
+      add('Medicações em uso:\n' + ($('#p-meds-current').textContent || '—'));
+      add('Medicações prévias:\n' + ($('#p-meds-past').textContent || '—'));
+      add('Exames (primeiro/último):\n' + ($('#p-exams').textContent || '—'));
+      add('Resumo WhatsApp:\n' + ($('#p-wa').textContent || '—'));
+
+      add('— Escores', 14, true);
+      const up = extractSeries('UPDRS-III'); const sa = extractSeries('SARA'); const mf = extractSeries('mFARS');
+      add(`UPDRS-III: ${up.values.length? up.values[up.values.length-1] : '—'}`);
+      add(`SARA: ${sa.values.length? sa.values[sa.values.length-1] : '—'}`);
+      add(`mFARS: ${mf.values.length? mf.values[mf.values.length-1] : '—'}`);
+
+      doc.save(`Resumo_${app.activePatient.full_name.replace(/\s+/g,'_')}.pdf`);
+    }
+
+    // Helpers
+    function debounce(fn, wait) { let t; return (...args) => { clearTimeout(t); t = setTimeout(()=>fn.apply(this,args), wait); }; }
+    window.logout = logout; // for header button
+  </script>
+</body>
+</html>
